@@ -1,0 +1,3 @@
+*/15 * * * * cd /Users/YOUR_USERNAME/ai-operator && /usr/bin/python3 control_plane/scripts/02_heartbeat.py >> control_plane/logs/cron.log 2>&1
+0 2 * * * cd /Users/YOUR_USERNAME/ai-operator && /usr/bin/python3 control_plane/scripts/03_nightly_consolidation.py >> control_plane/logs/cron.log 2>&1
+0 8 * * * cd /Users/YOUR_USERNAME/ai-operator && /bin/date +"%Y-%m-%d" | /usr/bin/awk '{print "# Daily Note\n\n## Date\n- "$1"\n\n## Active Jobs\n\n## Notes\n\n## Decisions\n\n## Blockers\n"}' > live/daily_notes/$(/bin/date +\%F).md

@@ -1,0 +1,5 @@
+# Heartbeat: Supervisor logic running every 3 minutes
+*/3 * * * * /opt/homebrew/bin/python3 ~/ai-operator/control_plane/scripts/02_heartbeat.py >> ~/ai-operator/logs/heartbeat.log 2>&1
+
+# Nightly Consolidation: Runs at 2:00 AM daily
+0 2 * * * /opt/homebrew/bin/python3 ~/ai-operator/control_plane/scripts/03_nightly_consolidation.py >> ~/ai-operator/logs/nightly.log 2>&1

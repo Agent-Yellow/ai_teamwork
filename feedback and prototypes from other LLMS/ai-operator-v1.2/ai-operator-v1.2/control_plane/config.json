@@ -1,0 +1,24 @@
+{
+  "root": "/Users/YOUR_USERNAME/ai-operator",
+  "heartbeat_minutes": 15,
+  "max_safe_retries": 2,
+  "default_product_type": "paid_template_toolkit",
+  "approval_required_actions": [
+    "dns_change",
+    "live_billing_change",
+    "public_post",
+    "refund",
+    "secret_rotation",
+    "delete_important_file",
+    "irreversible_production_change"
+  ],
+  "allowed_autonomous_actions": [
+    "write_prd",
+    "write_copy",
+    "scaffold_repo",
+    "create_vercel_preview",
+    "create_stripe_test_product",
+    "retry_safe_job",
+    "update_status_files"
+  ]
+}

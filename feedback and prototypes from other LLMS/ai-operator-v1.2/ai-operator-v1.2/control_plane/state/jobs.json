@@ -1,0 +1,17 @@
+{
+  "jobs": [
+    {
+      "id": "job_20260318_001",
+      "title": "Write PRD for starter toolkit",
+      "type": "write_prd",
+      "status": "queued",
+      "safe_retry_count": 0,
+      "max_retries": 2,
+      "repo_path": "/Users/YOUR_USERNAME/ai-operator/repos/starter_paid_toolkit",
+      "project_path": "/Users/YOUR_USERNAME/ai-operator/live/projects/starter_paid_toolkit",
+      "created_at": "2026-03-18T21:00:00",
+      "updated_at": "2026-03-18T21:00:00",
+      "notes": "Initial scaffold"
+    }
+  ]
+}
