@@ -3,17 +3,17 @@
 This repository now includes a portable control-plane baseline for a two-machine OpenClaw setup:
 
 - **Mac primary:** always-on gateway, scheduler, durable state owner
-- **Linux worker:** optional node that checks in when online and takes Linux/GPU/local-model work
+- **Linux worker:** optional node reached over SSH/Tailscale for Linux/GPU/local-model work
 
-The implementation is still intentionally small, but it now boots from a fresh checkout, creates its runtime directories, persists dispatcher state in SQLite, and exposes a minimal node/job workflow instead of placeholder-only cron scripts.
+The implementation is still intentionally small, but it now boots from a fresh checkout, creates its runtime directories, persists dispatcher state in SQLite, probes worker availability from the Mac, and can execute assigned jobs locally or remotely over SSH.
 
 ## Architecture
 
 The system explicitly divides responsibility:
 
 1. **OpenClaw Gateway:** runs continuously on the always-on Mac and owns the operator-facing control plane.
-2. **The Dispatcher (this repo):** tracks nodes, jobs, approvals, and queue snapshots with deterministic local scripts.
-3. **Workers / Nodes:** check in over time, advertise capabilities, claim assigned work, and report job status transitions back to the dispatcher.
+2. **The Dispatcher (this repo):** tracks nodes, jobs, approvals, queue snapshots, worker reachability, and execution logs.
+3. **Workers / Nodes:** are described in config and are reached by the Mac over SSH/Tailscale when they are online.
 
 This is the intended role split for a Mac that is available 24/7 and a Linux laptop that is only online at night.
 
@@ -48,12 +48,13 @@ The old `jobs/active.json` file is still produced as a compatibility snapshot, b
 ## Core Scripts
 
 - `01_bootstrap.py`: creates runtime directories, initializes SQLite, seeds node inventory, compiles `MEMORY.md`
-- `02_heartbeat.py`: marks stale nodes offline, dispatches queued jobs to eligible online nodes, writes approval packet and legacy snapshot
+- `02_heartbeat.py`: probes configured nodes, marks stale nodes offline, dispatches queued jobs to eligible online nodes, writes approval packet and legacy snapshot
 - `03_nightly_consolidation.py`: rolls up daily counts, rebuilds `MEMORY.md`, refreshes snapshot
-- `04_node_check_in.py`: refreshes a node heartbeat and capability inventory
+- `04_node_check_in.py`: manual node status override for local testing or admin use
 - `05_enqueue_job.py`: adds a job to the dispatcher queue
 - `06_claim_jobs.py`: lists jobs assigned to a node
 - `07_update_job.py`: records worker-side job status transitions
+- `08_run_assigned_jobs.py`: executes assigned jobs from the Mac on the local node or a remote SSH target and writes per-job logs to `logs/jobs/`
 
 ## OpenClaw Topology
 
@@ -66,8 +67,8 @@ This repo is aligned to the following deployment:
   - provides daytime-safe baseline execution and model access
 - **Linux worker**
   - runs Ubuntu on the second NVMe
-  - checks in when online
-  - handles Linux-specific, GPU, and heavy local-model jobs
+  - exposes SSH over Tailscale
+  - handles Linux-specific, GPU, and heavy local-model jobs when reachable
   - can disappear without taking the control plane down
 
 See [Mac Primary Linux Worker](docs/mac_primary_linux_worker.md) for the concrete rollout plan.

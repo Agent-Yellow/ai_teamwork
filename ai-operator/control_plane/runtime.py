@@ -17,6 +17,7 @@ DEFAULT_JOB_SNAPSHOT = {
     "retryable": [],
     "awaiting_approval": [],
     "assigned": [],
+    "completed": [],
 }
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,7 @@ def ensure_runtime_dirs(root: Path | None = None) -> dict[str, Path]:
     root = root or repo_root()
     paths = {
         "logs": root / "logs",
+        "job_logs": root / "logs" / "jobs",
         "state": root / "state",
         "daily_notes": root / "live" / "daily_notes",
     }
@@ -83,6 +85,8 @@ def default_config() -> dict[str, Any]:
             "database_path": "state/control_plane.db",
             "lease_seconds": 900,
             "stale_after_seconds": 900,
+            "execution_timeout_seconds": 1800,
+            "probe_timeout_seconds": 15,
         },
         "openclaw": {
             "gateway_host": hostname,
@@ -140,6 +144,7 @@ def connect_db(root: Path | None = None, config: dict[str, Any] | None = None) -
             transport TEXT NOT NULL,
             address TEXT,
             capabilities_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'offline',
             notes TEXT,
             last_seen TEXT,
@@ -171,6 +176,12 @@ def connect_db(root: Path | None = None, config: dict[str, Any] | None = None) -
         );
         """
     )
+    node_columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    if "metadata_json" not in node_columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "metadata_json" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
     return conn
 
@@ -196,14 +207,15 @@ def seed_nodes(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
             """
             INSERT INTO nodes (
                 id, display_name, role, transport, address, capabilities_json,
-                status, notes, last_seen, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'offline', ?, NULL, ?, ?)
+                metadata_json, status, notes, last_seen, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', ?, NULL, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 display_name = excluded.display_name,
                 role = excluded.role,
                 transport = excluded.transport,
                 address = excluded.address,
                 capabilities_json = excluded.capabilities_json,
+                metadata_json = excluded.metadata_json,
                 notes = excluded.notes,
                 updated_at = excluded.updated_at
             """,
@@ -214,6 +226,7 @@ def seed_nodes(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
                 node.get("transport", "tailscale"),
                 node.get("address", ""),
                 json.dumps(normalize_capabilities(node.get("capabilities")), sort_keys=True),
+                json.dumps(node.get("metadata", {}), sort_keys=True),
                 node.get("notes"),
                 now,
                 now,
@@ -235,6 +248,7 @@ def check_in_node(
     transport: str,
     address: str,
     capabilities: list[str],
+    metadata: dict[str, Any] | None = None,
     notes: str | None = None,
     status: str = "online",
 ) -> None:
@@ -243,14 +257,15 @@ def check_in_node(
         """
         INSERT INTO nodes (
             id, display_name, role, transport, address, capabilities_json,
-            status, notes, last_seen, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            metadata_json, status, notes, last_seen, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             display_name = excluded.display_name,
             role = excluded.role,
             transport = excluded.transport,
             address = excluded.address,
             capabilities_json = excluded.capabilities_json,
+            metadata_json = excluded.metadata_json,
             status = excluded.status,
             notes = excluded.notes,
             last_seen = excluded.last_seen,
@@ -263,6 +278,7 @@ def check_in_node(
             transport,
             address,
             json.dumps(normalize_capabilities(capabilities), sort_keys=True),
+            json.dumps(metadata or {}, sort_keys=True),
             status,
             notes,
             now,
@@ -446,10 +462,81 @@ def fetch_online_nodes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "transport": row["transport"],
             "address": row["address"],
             "capabilities": json.loads(row["capabilities_json"]),
+            "metadata": json.loads(row["metadata_json"]),
             "last_seen": row["last_seen"],
         }
         for row in rows
     ]
+
+
+def fetch_nodes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM nodes ORDER BY role ASC, id ASC").fetchall()
+    return [
+        {
+            "id": row["id"],
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "transport": row["transport"],
+            "address": row["address"],
+            "capabilities": json.loads(row["capabilities_json"]),
+            "metadata": json.loads(row["metadata_json"]),
+            "status": row["status"],
+            "notes": row["notes"],
+            "last_seen": row["last_seen"],
+        }
+        for row in rows
+    ]
+
+
+def fetch_node(conn: sqlite3.Connection, node_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "transport": row["transport"],
+        "address": row["address"],
+        "capabilities": json.loads(row["capabilities_json"]),
+        "metadata": json.loads(row["metadata_json"]),
+        "status": row["status"],
+        "notes": row["notes"],
+        "last_seen": row["last_seen"],
+    }
+
+
+def configured_nodes(config: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = {node["id"]: dict(node) for node in config.get("nodes", [])}
+    local = config.get("local_node")
+    if local:
+        local_copy = dict(local)
+        local_copy.setdefault("transport", "local")
+        nodes[local_copy["id"]] = local_copy
+    return list(nodes.values())
+
+
+def node_config(config: dict[str, Any], node_id: str) -> dict[str, Any] | None:
+    for node in configured_nodes(config):
+        if node["id"] == node_id:
+            return node
+    return None
+
+
+def merge_job_metadata(
+    conn: sqlite3.Connection,
+    job_id: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    row = conn.execute("SELECT metadata_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    metadata = json.loads(row["metadata_json"]) if row and row["metadata_json"] else {}
+    metadata.update(values)
+    conn.execute(
+        "UPDATE jobs SET metadata_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(metadata, sort_keys=True), iso_now(), job_id),
+    )
+    conn.commit()
+    return metadata
 
 
 def dispatch_queued_jobs(conn: sqlite3.Connection, config: dict[str, Any]) -> list[tuple[str, str]]:

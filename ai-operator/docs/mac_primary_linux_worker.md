@@ -21,8 +21,7 @@ That availability profile means the Mac must own the control plane.
 
 - Boots Ubuntu from the second NVMe
 - Runs Tailscale
-- Checks in to the dispatcher with `04_node_check_in.py`
-- Claims jobs assigned to `linux-night`
+- Exposes SSH so the Mac can probe and execute remote commands
 - Hosts heavier local models and Linux/GPU execution
 
 ## Why this split
@@ -58,7 +57,7 @@ Suggested services:
 
 - OpenClaw gateway on Mac, reachable over Tailscale
 - Dispatcher database and scripts stay local to the Mac
-- Linux worker connects inbound to the Mac over tailnet and refreshes node heartbeat
+- Linux worker exposes SSH and optional model services over the tailnet
 
 ## First-pass rollout
 
@@ -66,8 +65,7 @@ Suggested services:
 2. Install Tailscale on both Mac and Linux.
 3. Put the OpenClaw gateway on the Mac.
 4. Put this repo on the Mac as the dispatcher source of truth.
-5. Copy this repo to Linux only if you want the Linux worker to self-report with the same scripts.
-6. Configure `control_plane/config.json` with the actual tailnet IPs and node IDs.
+5. Configure `control_plane/config.json` with the actual tailnet IPs, SSH target, and node IDs.
 7. Bootstrap on the Mac:
 
    ```bash
@@ -85,53 +83,37 @@ Suggested services:
      --preferred-node linux-night
    ```
 
-9. Check in the Mac node:
-
-   ```bash
-   python3 control_plane/scripts/04_node_check_in.py
-   ```
-
-10. Check in the Linux node when it is online:
-
-   ```bash
-   python3 control_plane/scripts/04_node_check_in.py \
-     --node-id linux-night \
-     --display-name "Ubuntu worker laptop" \
-     --role worker \
-     --transport tailscale \
-     --address 100.64.0.20 \
-     --capabilities shell,linux,gpu,nightly,local-models
-   ```
-
-11. Run heartbeat on the Mac:
+9. Run heartbeat on the Mac so it probes configured nodes:
 
    ```bash
    python3 control_plane/scripts/02_heartbeat.py
    ```
 
-12. Inspect Linux-assigned work:
+10. Execute assigned jobs from the Mac:
+
+   ```bash
+   python3 control_plane/scripts/08_run_assigned_jobs.py
+   ```
+
+11. Inspect Linux-assigned work:
 
    ```bash
    python3 control_plane/scripts/06_claim_jobs.py --node-id linux-night
    ```
 
-13. Update status after execution:
+12. Read execution logs:
 
    ```bash
-   python3 control_plane/scripts/07_update_job.py \
-     --job-id <job-id> \
-     --status completed \
-     --node-id linux-night \
-     --message "Linux smoke test finished"
+   ls logs/jobs
    ```
 
 ## What this does not do yet
 
-This is still a dispatcher baseline, not a full worker runtime. It does not yet:
+This is still a small Mac-led dispatcher, not a full distributed scheduler. It does not yet:
 
-- execute the assigned command automatically
-- stream stdout/stderr back into the database
+- parallelize jobs across multiple remote workers with concurrency controls
 - enforce capability-specific sandbox policies
 - integrate directly with OpenClaw node APIs
+- manage remote model runtimes for you
 
 Those are the next layers to build after the Mac-primary topology is stable.

@@ -2,7 +2,9 @@
   "dispatcher": {
     "database_path": "state/control_plane.db",
     "lease_seconds": 900,
-    "stale_after_seconds": 900
+    "stale_after_seconds": 900,
+    "execution_timeout_seconds": 1800,
+    "probe_timeout_seconds": 15
   },
   "openclaw": {
     "gateway_host": "mac-primary",
@@ -40,7 +42,10 @@
         "macos",
         "ollama",
         "daytime"
-      ]
+      ],
+      "metadata": {
+        "workdir": "/Users/jit9b/ai_teamwork"
+      }
     },
     {
       "id": "linux-night",
@@ -54,7 +59,13 @@
         "gpu",
         "nightly",
         "local-models"
-      ]
+      ],
+      "metadata": {
+        "ssh_target": "jit9b@100.64.0.20",
+        "ssh_port": 22,
+        "probe_command": "printf linux-night-ready",
+        "workdir": "/home/jit9b"
+      }
     }
   ]
 }

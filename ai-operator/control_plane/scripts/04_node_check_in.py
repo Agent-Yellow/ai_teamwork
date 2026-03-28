@@ -8,9 +8,11 @@ from control_plane.runtime import (
     check_in_node,
     connect_db,
     ensure_runtime_dirs,
+    fetch_node,
     load_config,
     local_node_config,
     normalize_capabilities,
+    node_config,
     repo_root,
     seed_nodes,
 )
@@ -40,6 +42,9 @@ def main() -> None:
     transport = args.transport or local.get("transport", "tailscale")
     address = args.address or local.get("address", "")
     capabilities = normalize_capabilities(args.capabilities) or normalize_capabilities(local.get("capabilities"))
+    configured = node_config(config, node_id) or {}
+    existing = fetch_node(conn, node_id) or {}
+    metadata = configured.get("metadata") or existing.get("metadata") or {}
 
     check_in_node(
         conn,
@@ -49,6 +54,7 @@ def main() -> None:
         transport=transport,
         address=address,
         capabilities=capabilities,
+        metadata=metadata,
         notes=args.notes,
     )
     print(f"Node {node_id} checked in with capabilities={','.join(capabilities)}")

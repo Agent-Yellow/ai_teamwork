@@ -5,8 +5,8 @@ from _script_env import setup_import_path
 
 setup_import_path()
 
+from control_plane.executor import refresh_node_statuses
 from control_plane.runtime import (
-    check_in_node,
     connect_db,
     dispatch_queued_jobs,
     ensure_runtime_dirs,
@@ -14,7 +14,6 @@ from control_plane.runtime import (
     fetch_online_nodes,
     import_legacy_jobs,
     load_config,
-    local_node_config,
     mark_stale_nodes,
     repo_root,
     seed_nodes,
@@ -45,18 +44,7 @@ def check_heartbeat():
     conn = connect_db(root, config)
     seed_nodes(conn, config)
     imported = import_legacy_jobs(conn, root)
-
-    local = local_node_config(config)
-    check_in_node(
-        conn,
-        local["id"],
-        display_name=local.get("display_name", local["id"]),
-        role=local.get("role", "control-plane"),
-        transport=local.get("transport", "local"),
-        address=local.get("address", "127.0.0.1"),
-        capabilities=local.get("capabilities", []),
-        notes="Heartbeat check-in",
-    )
+    probe_results = refresh_node_statuses(conn, config)
 
     stale_after = int(config.get("dispatcher", {}).get("stale_after_seconds", 900))
     stale_marked = mark_stale_nodes(conn, stale_after)
@@ -76,6 +64,7 @@ def check_heartbeat():
         f"assigned={len(assigned_jobs)} awaiting_approval={len(awaiting_approval)} "
         f"failed={len(failed_jobs)} imported_legacy={imported} "
         f"stale_nodes_marked_offline={stale_marked} assignments={len(assignments)} "
+        f"probes={len(probe_results)} "
         f"snapshot={snapshot_path}"
     )
 
