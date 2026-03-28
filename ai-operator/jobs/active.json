@@ -1,7 +1,8 @@
 {
-  "queued": [],
-  "running": [],
+  "assigned": [],
+  "awaiting_approval": [],
   "failed": [],
+  "queued": [],
   "retryable": [],
-  "awaiting_approval": []
+  "running": []
 }

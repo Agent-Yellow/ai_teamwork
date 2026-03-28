@@ -1,18 +1,77 @@
-# AI Operator (v1.2 Control Plane Spec)
+# AI Operator (v1.3 Dispatcher Baseline)
 
-This repository contains the physical scaffolding and execution scripts for a supervised, autonomous AI operator designed to run 24/7 on a constrained device (e.g., MacBook Air M1). 
+This repository now includes a portable control-plane baseline for a two-machine OpenClaw setup:
+
+- **Mac primary:** always-on gateway, scheduler, durable state owner
+- **Linux worker:** optional node that checks in when online and takes Linux/GPU/local-model work
+
+The implementation is still intentionally small, but it now boots from a fresh checkout, creates its runtime directories, persists dispatcher state in SQLite, and exposes a minimal node/job workflow instead of placeholder-only cron scripts.
 
 ## Architecture
+
 The system explicitly divides responsibility:
-1. **The Language Model:** Evaluates system state (`active.json`, `MEMORY.md`), generates code, reasoning, and handles tool usage logic.
-2. **The Control Plane (Here):** A deterministic set of Python and bash scripts that supervise the LLM's tasks, handle scheduling, handle approvals, and ensure rigid security boundaries.
 
-## Quick Start on Mac M1
-1. `cp .env.example .env` and fill in your API variables.
-2. Ensure you have `python3` installed via Homebrew.
-3. Review `live/tacit_knowledge/policy_rules.md`. Modify any overarching security constraints.
-4. Run python `control_plane/scripts/01_bootstrap.py`. This reads your tacit knowledge and auto-compiles the system read-only `live/MEMORY.md`. 
-5. The `02_heartbeat.py` script is the main job runner. Add `cron.example` to your `crontab -e` to make the system fully autonomous!
+1. **OpenClaw Gateway:** runs continuously on the always-on Mac and owns the operator-facing control plane.
+2. **The Dispatcher (this repo):** tracks nodes, jobs, approvals, and queue snapshots with deterministic local scripts.
+3. **Workers / Nodes:** check in over time, advertise capabilities, claim assigned work, and report job status transitions back to the dispatcher.
 
-## The Kill Switch
-The `emergency_stop.sh` script immediately strips your cron entries, halts process trees, and freezes active json state into a read-only state. This prevents runaway loops. Run this from your terminal immediately if behavior drifts.
+This is the intended role split for a Mac that is available 24/7 and a Linux laptop that is only online at night.
+
+## Runtime Layout
+
+`01_bootstrap.py` now creates and maintains the runtime paths the older repo assumed already existed:
+
+- `logs/`
+- `state/`
+- `live/daily_notes/`
+- `live/MEMORY.md`
+- `state/control_plane.db`
+
+The old `jobs/active.json` file is still produced as a compatibility snapshot, but SQLite is now the source of truth for nodes and jobs.
+
+## Quick Start
+
+1. `cd ai-operator`
+2. `cp .env.example .env`
+3. `cp control_plane/config.example.json control_plane/config.json`
+4. Edit `control_plane/config.json` for your real tailnet IPs, node ids, and OpenClaw gateway URL.
+5. Review `live/tacit_knowledge/*.md`.
+6. Run:
+
+   ```bash
+   export AI_OPERATOR_ROOT="$PWD"
+   python3 control_plane/scripts/01_bootstrap.py
+   python3 control_plane/scripts/04_node_check_in.py
+   python3 control_plane/scripts/02_heartbeat.py
+   ```
+
+## Core Scripts
+
+- `01_bootstrap.py`: creates runtime directories, initializes SQLite, seeds node inventory, compiles `MEMORY.md`
+- `02_heartbeat.py`: marks stale nodes offline, dispatches queued jobs to eligible online nodes, writes approval packet and legacy snapshot
+- `03_nightly_consolidation.py`: rolls up daily counts, rebuilds `MEMORY.md`, refreshes snapshot
+- `04_node_check_in.py`: refreshes a node heartbeat and capability inventory
+- `05_enqueue_job.py`: adds a job to the dispatcher queue
+- `06_claim_jobs.py`: lists jobs assigned to a node
+- `07_update_job.py`: records worker-side job status transitions
+
+## OpenClaw Topology
+
+This repo is aligned to the following deployment:
+
+- **Mac primary**
+  - runs OpenClaw gateway
+  - runs this dispatcher heartbeat
+  - stays reachable over Tailscale
+  - provides daytime-safe baseline execution and model access
+- **Linux worker**
+  - runs Ubuntu on the second NVMe
+  - checks in when online
+  - handles Linux-specific, GPU, and heavy local-model jobs
+  - can disappear without taking the control plane down
+
+See [Mac Primary Linux Worker](docs/mac_primary_linux_worker.md) for the concrete rollout plan.
+
+## Kill Switch
+
+`emergency_stop.sh` now respects `AI_OPERATOR_ROOT` instead of assuming a fixed install path. It removes matching cron entries, terminates script processes, and freezes the compatibility queue snapshot.

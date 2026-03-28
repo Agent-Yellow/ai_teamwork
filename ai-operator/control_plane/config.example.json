@@ -1,0 +1,60 @@
+{
+  "dispatcher": {
+    "database_path": "state/control_plane.db",
+    "lease_seconds": 900,
+    "stale_after_seconds": 900
+  },
+  "openclaw": {
+    "gateway_host": "mac-primary",
+    "gateway_url": "http://100.64.0.10:18789",
+    "transport": "tailscale",
+    "topology": "mac-primary-linux-worker"
+  },
+  "local_node": {
+    "id": "mac-primary",
+    "display_name": "Always-on Mac gateway",
+    "role": "control-plane",
+    "transport": "local",
+    "address": "127.0.0.1",
+    "capabilities": [
+      "gateway",
+      "scheduler",
+      "shell",
+      "macos",
+      "ollama",
+      "daytime"
+    ],
+    "heartbeat_ttl_seconds": 600
+  },
+  "nodes": [
+    {
+      "id": "mac-primary",
+      "display_name": "Always-on Mac gateway",
+      "role": "control-plane",
+      "transport": "tailscale",
+      "address": "100.64.0.10",
+      "capabilities": [
+        "gateway",
+        "scheduler",
+        "shell",
+        "macos",
+        "ollama",
+        "daytime"
+      ]
+    },
+    {
+      "id": "linux-night",
+      "display_name": "Ubuntu worker laptop",
+      "role": "worker",
+      "transport": "tailscale",
+      "address": "100.64.0.20",
+      "capabilities": [
+        "shell",
+        "linux",
+        "gpu",
+        "nightly",
+        "local-models"
+      ]
+    }
+  ]
+}
