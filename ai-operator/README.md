@@ -7,6 +7,8 @@ This repository now includes a portable control-plane baseline for a two-machine
 
 The implementation is still intentionally small, but it now boots from a fresh checkout, creates its runtime directories, persists dispatcher state in SQLite, probes worker availability from the Mac, and can execute assigned jobs locally or remotely over SSH.
 
+It also now enforces policy-controlled `job_type` validation during enqueue and execution, so the queue is constrained by allowed command prefixes instead of arbitrary shell.
+
 ## Architecture
 
 The system explicitly divides responsibility:
@@ -52,6 +54,7 @@ The old `jobs/active.json` file is still produced as a compatibility snapshot, b
 - `03_nightly_consolidation.py`: rolls up daily counts, rebuilds `MEMORY.md`, refreshes snapshot
 - `04_node_check_in.py`: manual node status override for local testing or admin use
 - `05_enqueue_job.py`: adds a job to the dispatcher queue
+- `control_plane/policy.py`: policy-controlled job types, command validation, and job defaults
 - `06_claim_jobs.py`: lists jobs assigned to a node
 - `07_update_job.py`: records worker-side job status transitions
 - `08_run_assigned_jobs.py`: executes assigned jobs from the Mac on the local node or a remote SSH target and writes per-job logs to `logs/jobs/`
@@ -70,6 +73,8 @@ This repo is aligned to the following deployment:
   - exposes SSH over Tailscale
   - handles Linux-specific, GPU, and heavy local-model jobs when reachable
   - can disappear without taking the control plane down
+
+Use [bootstrap_linux_worker.sh](deploy/linux/bootstrap_linux_worker.sh) to prepare the Ubuntu worker after installation.
 
 See [Mac Primary Linux Worker](docs/mac_primary_linux_worker.md) for the concrete rollout plan.
 

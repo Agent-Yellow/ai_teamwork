@@ -7,6 +7,7 @@ setup_import_path()
 
 from control_plane.executor import refresh_node_statuses
 from control_plane.runtime import (
+    activate_retryable_jobs,
     connect_db,
     dispatch_queued_jobs,
     ensure_runtime_dirs,
@@ -14,6 +15,7 @@ from control_plane.runtime import (
     fetch_online_nodes,
     import_legacy_jobs,
     load_config,
+    recover_expired_leases,
     mark_stale_nodes,
     repo_root,
     seed_nodes,
@@ -48,6 +50,8 @@ def check_heartbeat():
 
     stale_after = int(config.get("dispatcher", {}).get("stale_after_seconds", 900))
     stale_marked = mark_stale_nodes(conn, stale_after)
+    recovered_leases = recover_expired_leases(conn, config)
+    activated_retries = activate_retryable_jobs(conn)
     assignments = dispatch_queued_jobs(conn, config)
     awaiting_approval = fetch_jobs(conn, statuses=["awaiting_approval"])
     _write_approval_template(paths["logs"] / "approvals_needed.md", awaiting_approval)
@@ -64,6 +68,7 @@ def check_heartbeat():
         f"assigned={len(assigned_jobs)} awaiting_approval={len(awaiting_approval)} "
         f"failed={len(failed_jobs)} imported_legacy={imported} "
         f"stale_nodes_marked_offline={stale_marked} assignments={len(assignments)} "
+        f"recovered_leases={len(recovered_leases)} activated_retries={len(activated_retries)} "
         f"probes={len(probe_results)} "
         f"snapshot={snapshot_path}"
     )

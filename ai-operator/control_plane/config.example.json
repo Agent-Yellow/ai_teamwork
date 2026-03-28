@@ -4,7 +4,95 @@
     "lease_seconds": 900,
     "stale_after_seconds": 900,
     "execution_timeout_seconds": 1800,
-    "probe_timeout_seconds": 15
+    "probe_timeout_seconds": 15,
+    "max_concurrent_jobs": 1,
+    "retry_backoff_seconds": 300,
+    "max_attempts": 3
+  },
+  "job_policy": {
+    "default_job_type": "diagnostic",
+    "job_types": {
+      "diagnostic": {
+        "allowed_prefixes": [
+          "cat /etc/os-release",
+          "date",
+          "df",
+          "du",
+          "echo",
+          "git rev-parse",
+          "git status",
+          "hostname",
+          "ls",
+          "ollama list",
+          "ollama ps",
+          "printf",
+          "pwd",
+          "tailscale ip",
+          "tailscale status",
+          "uname",
+          "uptime",
+          "whoami"
+        ],
+        "default_required_capabilities": [
+          "shell"
+        ],
+        "default_retryable_on_failure": false,
+        "force_approval": false
+      },
+      "repo_sync": {
+        "allowed_prefixes": [
+          "git fetch",
+          "git pull",
+          "git rev-parse",
+          "git status"
+        ],
+        "default_required_capabilities": [
+          "shell"
+        ],
+        "default_retryable_on_failure": true,
+        "force_approval": false
+      },
+      "linux_gpu": {
+        "allowed_prefixes": [
+          "nvidia-smi",
+          "ollama list",
+          "ollama ps",
+          "rocm-smi",
+          "uname",
+          "uptime"
+        ],
+        "default_required_capabilities": [
+          "shell",
+          "linux"
+        ],
+        "default_retryable_on_failure": true,
+        "force_approval": false
+      },
+      "worker_bootstrap": {
+        "allowed_prefixes": [
+          "bash ./ai-operator/deploy/linux/bootstrap_linux_worker.sh",
+          "sudo bash ./ai-operator/deploy/linux/bootstrap_linux_worker.sh"
+        ],
+        "default_required_capabilities": [
+          "shell",
+          "linux"
+        ],
+        "default_retryable_on_failure": false,
+        "force_approval": true
+      },
+      "maintenance": {
+        "allowed_prefixes": [
+          "brew services",
+          "launchctl",
+          "systemctl"
+        ],
+        "default_required_capabilities": [
+          "shell"
+        ],
+        "default_retryable_on_failure": false,
+        "force_approval": true
+      }
+    }
   },
   "openclaw": {
     "gateway_host": "mac-primary",

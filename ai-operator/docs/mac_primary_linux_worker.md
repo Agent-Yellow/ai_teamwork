@@ -65,7 +65,13 @@ Suggested services:
 2. Install Tailscale on both Mac and Linux.
 3. Put the OpenClaw gateway on the Mac.
 4. Put this repo on the Mac as the dispatcher source of truth.
-5. Configure `control_plane/config.json` with the actual tailnet IPs, SSH target, and node IDs.
+5. Run the Linux bootstrap script after first boot:
+
+   ```bash
+   bash ./ai-operator/deploy/linux/bootstrap_linux_worker.sh
+   ```
+
+6. Configure `control_plane/config.json` with the actual tailnet IPs, SSH target, and node IDs.
 7. Bootstrap on the Mac:
 
    ```bash
@@ -79,7 +85,7 @@ Suggested services:
    python3 control_plane/scripts/05_enqueue_job.py \
      --name "Linux smoke test" \
      --command "uname -a" \
-     --requires shell,linux \
+     --job-type linux_gpu \
      --preferred-node linux-night
    ```
 

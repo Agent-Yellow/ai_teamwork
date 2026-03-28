@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from control_plane.policy import validate_job_command
 from control_plane.runtime import (
     check_in_node,
+    claim_job_for_execution,
+    clear_job_lock,
+    count_running_jobs,
     configured_nodes,
     fetch_jobs,
     fetch_node,
@@ -18,7 +24,9 @@ from control_plane.runtime import (
     normalize_capabilities,
     record_event,
     repo_root,
+    retry_backoff_seconds,
     update_job_status,
+    utc_now,
 )
 
 
@@ -205,16 +213,44 @@ def execute_assigned_jobs(conn, config: dict[str, Any]) -> list[dict[str, Any]]:
     job_log_dir = root / "logs" / "jobs"
     results: list[dict[str, Any]] = []
     execution_timeout = int(config.get("dispatcher", {}).get("execution_timeout_seconds", 1800))
+    max_concurrent = int(config.get("dispatcher", {}).get("max_concurrent_jobs", 1))
+    max_attempts = int(config.get("dispatcher", {}).get("max_attempts", 3))
 
     online = {node["id"]: node for node in fetch_nodes(conn) if node.get("status") == "online"}
     for job in fetch_jobs(conn, statuses=["assigned"]):
+        if count_running_jobs(conn) >= max_concurrent:
+            break
         node_id = job["assigned_node"]
         if not node_id or node_id not in online:
             continue
         node = online[node_id]
         metadata = dict(job["metadata"])
+        job_type = metadata.get("job_type", "diagnostic")
         timeout = int(metadata.get("timeout_seconds", execution_timeout))
-        update_job_status(conn, job["id"], "running", node_id=node_id, detail="Execution started")
+        execution_lease = max(timeout + 60, int(config.get("dispatcher", {}).get("lease_seconds", 900)))
+        lock_token = str(uuid.uuid4())
+        lease_expires_at = (utc_now() + timedelta(seconds=execution_lease)).isoformat()
+        if not claim_job_for_execution(
+            conn,
+            job["id"],
+            node_id=node_id,
+            lease_expires_at=lease_expires_at,
+            lock_token=lock_token,
+        ):
+            continue
+        try:
+            validate_job_command(config, job_type, job["command"])
+        except ValueError as exc:
+            clear_job_lock(
+                conn,
+                job["id"],
+                status="failed",
+                node_id=node_id,
+                next_eligible_at=None,
+                detail=str(exc),
+            )
+            results.append({"job_id": job["id"], "status": "failed", "node_id": node_id})
+            continue
 
         started_at = iso_now()
         log_path = job_log_dir / f"{job['id']}.json"
@@ -255,6 +291,7 @@ def execute_assigned_jobs(conn, config: dict[str, Any]) -> list[dict[str, Any]]:
                 job["id"],
                 {
                     "last_execution": {
+                        "lock_token": lock_token,
                         "node_id": node_id,
                         "started_at": started_at,
                         "completed_at": payload["completed_at"],
@@ -264,16 +301,29 @@ def execute_assigned_jobs(conn, config: dict[str, Any]) -> list[dict[str, Any]]:
                 },
             )
             if completed.returncode == 0:
-                update_job_status(conn, job["id"], "completed", node_id=node_id, detail=str(log_path))
+                clear_job_lock(
+                    conn,
+                    job["id"],
+                    status="completed",
+                    node_id=node_id,
+                    next_eligible_at=None,
+                    detail=str(log_path),
+                )
                 results.append({"job_id": job["id"], "status": "completed", "node_id": node_id})
                 continue
 
-            failure_status = "retryable" if metadata.get("retryable_on_failure") else "failed"
-            update_job_status(
+            retryable = bool(metadata.get("retryable_on_failure")) and job["attempt_count"] + 1 < max_attempts
+            failure_status = "retryable" if retryable else "failed"
+            next_retry = None
+            if retryable:
+                delay = retry_backoff_seconds(config, job["attempt_count"] + 1)
+                next_retry = (utc_now() + timedelta(seconds=delay)).isoformat()
+            clear_job_lock(
                 conn,
                 job["id"],
-                failure_status,
+                status=failure_status,
                 node_id=node_id,
+                next_eligible_at=next_retry,
                 detail=f"returncode={completed.returncode} log={log_path}",
             )
             if completed.returncode == 255 and not is_local_node(config, node):
@@ -298,6 +348,7 @@ def execute_assigned_jobs(conn, config: dict[str, Any]) -> list[dict[str, Any]]:
                 job["id"],
                 {
                     "last_execution": {
+                        "lock_token": lock_token,
                         "node_id": node_id,
                         "started_at": started_at,
                         "completed_at": payload["completed_at"],
@@ -306,10 +357,36 @@ def execute_assigned_jobs(conn, config: dict[str, Any]) -> list[dict[str, Any]]:
                     }
                 },
             )
-            update_job_status(conn, job["id"], "retryable", node_id=node_id, detail=f"timeout log={log_path}")
-            results.append({"job_id": job["id"], "status": "retryable", "node_id": node_id})
+            exhausted = job["attempt_count"] + 1 >= max_attempts
+            failure_status = "failed" if exhausted else "retryable"
+            next_retry = None
+            if not exhausted:
+                delay = retry_backoff_seconds(config, job["attempt_count"] + 1)
+                next_retry = (utc_now() + timedelta(seconds=delay)).isoformat()
+            clear_job_lock(
+                conn,
+                job["id"],
+                status=failure_status,
+                node_id=node_id,
+                next_eligible_at=next_retry,
+                detail=f"timeout log={log_path}",
+            )
+            results.append({"job_id": job["id"], "status": failure_status, "node_id": node_id})
         except Exception as exc:
             record_event(conn, job["id"], "execution-error", node_id=node_id, detail=str(exc))
-            update_job_status(conn, job["id"], "retryable", node_id=node_id, detail=str(exc))
-            results.append({"job_id": job["id"], "status": "retryable", "node_id": node_id})
+            exhausted = job["attempt_count"] + 1 >= max_attempts
+            failure_status = "failed" if exhausted else "retryable"
+            next_retry = None
+            if not exhausted:
+                delay = retry_backoff_seconds(config, job["attempt_count"] + 1)
+                next_retry = (utc_now() + timedelta(seconds=delay)).isoformat()
+            clear_job_lock(
+                conn,
+                job["id"],
+                status=failure_status,
+                node_id=node_id,
+                next_eligible_at=next_retry,
+                detail=str(exc),
+            )
+            results.append({"job_id": job["id"], "status": failure_status, "node_id": node_id})
     return results

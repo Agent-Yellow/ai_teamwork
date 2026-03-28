@@ -87,6 +87,82 @@ def default_config() -> dict[str, Any]:
             "stale_after_seconds": 900,
             "execution_timeout_seconds": 1800,
             "probe_timeout_seconds": 15,
+            "max_concurrent_jobs": 1,
+            "retry_backoff_seconds": 300,
+            "max_attempts": 3,
+        },
+        "job_policy": {
+            "default_job_type": "diagnostic",
+            "job_types": {
+                "diagnostic": {
+                    "allowed_prefixes": [
+                        "cat /etc/os-release",
+                        "date",
+                        "df",
+                        "du",
+                        "echo",
+                        "git rev-parse",
+                        "git status",
+                        "hostname",
+                        "ls",
+                        "ollama list",
+                        "ollama ps",
+                        "printf",
+                        "pwd",
+                        "tailscale ip",
+                        "tailscale status",
+                        "uname",
+                        "uptime",
+                        "whoami"
+                    ],
+                    "default_required_capabilities": ["shell"],
+                    "default_retryable_on_failure": False,
+                    "force_approval": False
+                },
+                "repo_sync": {
+                    "allowed_prefixes": [
+                        "git fetch",
+                        "git pull",
+                        "git rev-parse",
+                        "git status"
+                    ],
+                    "default_required_capabilities": ["shell"],
+                    "default_retryable_on_failure": True,
+                    "force_approval": False
+                },
+                "linux_gpu": {
+                    "allowed_prefixes": [
+                        "nvidia-smi",
+                        "ollama list",
+                        "ollama ps",
+                        "rocm-smi",
+                        "uname",
+                        "uptime"
+                    ],
+                    "default_required_capabilities": ["shell", "linux"],
+                    "default_retryable_on_failure": True,
+                    "force_approval": False
+                },
+                "worker_bootstrap": {
+                    "allowed_prefixes": [
+                        "bash ./ai-operator/deploy/linux/bootstrap_linux_worker.sh",
+                        "sudo bash ./ai-operator/deploy/linux/bootstrap_linux_worker.sh"
+                    ],
+                    "default_required_capabilities": ["shell", "linux"],
+                    "default_retryable_on_failure": False,
+                    "force_approval": True
+                },
+                "maintenance": {
+                    "allowed_prefixes": [
+                        "brew services",
+                        "launchctl",
+                        "systemctl"
+                    ],
+                    "default_required_capabilities": ["shell"],
+                    "default_retryable_on_failure": False,
+                    "force_approval": True
+                }
+            }
         },
         "openclaw": {
             "gateway_host": hostname,
@@ -162,6 +238,10 @@ def connect_db(root: Path | None = None, config: dict[str, Any] | None = None) -
             required_capabilities_json TEXT NOT NULL,
             metadata_json TEXT NOT NULL,
             lease_expires_at TEXT,
+            next_eligible_at TEXT,
+            started_at TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            lock_token TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -182,6 +262,14 @@ def connect_db(root: Path | None = None, config: dict[str, Any] | None = None) -
     job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "metadata_json" not in job_columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    if "next_eligible_at" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN next_eligible_at TEXT")
+    if "started_at" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN started_at TEXT")
+    if "attempt_count" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+    if "lock_token" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN lock_token TEXT")
     conn.commit()
     return conn
 
@@ -336,8 +424,9 @@ def enqueue_job(
         INSERT INTO jobs (
             id, name, status, assigned_node, command, approval_required,
             required_capabilities_json, metadata_json, lease_expires_at,
+            next_eligible_at, started_at, attempt_count, lock_token,
             created_at, updated_at
-        ) VALUES (?, ?, 'queued', NULL, ?, ?, ?, ?, NULL, ?, ?)
+        ) VALUES (?, ?, 'queued', NULL, ?, ?, ?, ?, NULL, ?, NULL, 0, NULL, ?, ?)
         """,
         (
             job_id,
@@ -346,6 +435,7 @@ def enqueue_job(
             int(approval_required),
             json.dumps(normalize_capabilities(required_capabilities), sort_keys=True),
             json.dumps(metadata or {}, sort_keys=True),
+            now,
             now,
             now,
         ),
@@ -401,8 +491,9 @@ def import_legacy_jobs(conn: sqlite3.Connection, root: Path | None = None) -> in
                 INSERT INTO jobs (
                     id, name, status, assigned_node, command, approval_required,
                     required_capabilities_json, metadata_json, lease_expires_at,
+                    next_eligible_at, started_at, attempt_count, lock_token,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, NULL, ?, NULL, ?, ?)
                 """,
                 (
                     job_id,
@@ -412,6 +503,8 @@ def import_legacy_jobs(conn: sqlite3.Connection, root: Path | None = None) -> in
                     int(bool(item.get("approval_required"))),
                     json.dumps(required, sort_keys=True),
                     json.dumps(metadata, sort_keys=True),
+                    item.get("next_eligible_at", now),
+                    int(item.get("attempt_count", 0)),
                     now,
                     now,
                 ),
@@ -443,6 +536,10 @@ def fetch_jobs(conn: sqlite3.Connection, *, statuses: list[str] | None = None) -
                 "required_capabilities": json.loads(row["required_capabilities_json"]),
                 "metadata": json.loads(row["metadata_json"]),
                 "lease_expires_at": row["lease_expires_at"],
+                "next_eligible_at": row["next_eligible_at"],
+                "started_at": row["started_at"],
+                "attempt_count": row["attempt_count"],
+                "lock_token": row["lock_token"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -537,6 +634,122 @@ def merge_job_metadata(
     )
     conn.commit()
     return metadata
+
+
+def clear_job_lock(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    status: str,
+    node_id: str | None = None,
+    next_eligible_at: str | None = None,
+    detail: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE jobs
+        SET status = ?, assigned_node = ?, lease_expires_at = NULL, next_eligible_at = ?,
+            started_at = NULL, lock_token = NULL, updated_at = ?
+        WHERE id = ?
+        """,
+        (status, node_id, next_eligible_at, iso_now(), job_id),
+    )
+    conn.commit()
+    record_event(conn, job_id, f"status:{status}", node_id=node_id, detail=detail)
+
+
+def retry_backoff_seconds(config: dict[str, Any], attempt_count: int) -> int:
+    base = int(config.get("dispatcher", {}).get("retry_backoff_seconds", 300))
+    multiplier = max(0, attempt_count - 1)
+    return base * (2 ** multiplier)
+
+
+def recover_expired_leases(conn: sqlite3.Connection, config: dict[str, Any]) -> list[tuple[str, str]]:
+    now = utc_now()
+    recovered: list[tuple[str, str]] = []
+    for job in fetch_jobs(conn, statuses=["assigned", "running"]):
+        lease = parse_ts(job["lease_expires_at"])
+        if not lease or lease > now:
+            continue
+        if job["status"] == "assigned":
+            clear_job_lock(
+                conn,
+                job["id"],
+                status="queued",
+                node_id=None,
+                next_eligible_at=iso_now(),
+                detail="Recovered expired assignment lease",
+            )
+            recovered.append((job["id"], "queued"))
+            continue
+
+        next_retry = (utc_now() + timedelta(seconds=retry_backoff_seconds(config, job["attempt_count"]))).isoformat()
+        exhausted = job["attempt_count"] >= int(config.get("dispatcher", {}).get("max_attempts", 3))
+        target = "failed" if exhausted else "retryable"
+        clear_job_lock(
+            conn,
+            job["id"],
+            status=target,
+            node_id=job["assigned_node"],
+            next_eligible_at=None if exhausted else next_retry,
+            detail="Recovered expired running lease",
+        )
+        recovered.append((job["id"], target))
+    return recovered
+
+
+def activate_retryable_jobs(conn: sqlite3.Connection) -> list[str]:
+    moved: list[str] = []
+    now = utc_now()
+    for job in fetch_jobs(conn, statuses=["retryable"]):
+        eligible = parse_ts(job["next_eligible_at"])
+        if eligible and eligible > now:
+            continue
+        conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'queued', assigned_node = NULL, lease_expires_at = NULL,
+                started_at = NULL, lock_token = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (iso_now(), job["id"]),
+        )
+        conn.commit()
+        record_event(conn, job["id"], "status:queued", detail="Retry backoff elapsed")
+        moved.append(job["id"])
+    return moved
+
+
+def claim_job_for_execution(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    node_id: str,
+    lease_expires_at: str,
+    lock_token: str,
+) -> bool:
+    started = iso_now()
+    row = conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'running', started_at = ?, lock_token = ?, lease_expires_at = ?,
+            updated_at = ?, attempt_count = attempt_count + 1
+        WHERE id = ? AND status = 'assigned' AND assigned_node = ? AND lock_token IS NULL
+        """,
+        (started, lock_token, lease_expires_at, started, job_id, node_id),
+    )
+    conn.commit()
+    if row.rowcount != 1:
+        return False
+    record_event(conn, job_id, "status:running", node_id=node_id, detail=f"lock={lock_token}")
+    return True
+
+
+def count_running_jobs(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM jobs WHERE status = 'running'"
+    ).fetchone()
+    return int(row["count"])
 
 
 def dispatch_queued_jobs(conn: sqlite3.Connection, config: dict[str, Any]) -> list[tuple[str, str]]:
