@@ -1,0 +1,6 @@
+ai-operator/.env
+ai-operator/control_plane/config.json
+ai-operator/live/MEMORY.md
+ai-operator/live/daily_notes/
+ai-operator/logs/
+ai-operator/state/

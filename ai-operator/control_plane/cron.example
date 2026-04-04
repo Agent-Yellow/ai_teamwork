@@ -1,5 +1,12 @@
-# Heartbeat: Supervisor logic running every 3 minutes
-*/3 * * * * /opt/homebrew/bin/python3 ~/ai-operator/control_plane/scripts/02_heartbeat.py >> ~/ai-operator/logs/heartbeat.log 2>&1
+# AI_OPERATOR_ROOT should point at the ai-operator directory.
+# Example:
+# export AI_OPERATOR_ROOT="$HOME/ai_teamwork/ai-operator"
 
-# Nightly Consolidation: Runs at 2:00 AM daily
-0 2 * * * /opt/homebrew/bin/python3 ~/ai-operator/control_plane/scripts/03_nightly_consolidation.py >> ~/ai-operator/logs/nightly.log 2>&1
+# Mac primary: supervisor logic every 3 minutes
+*/3 * * * * cd "$AI_OPERATOR_ROOT" && python3 control_plane/scripts/02_heartbeat.py >> "$AI_OPERATOR_ROOT/logs/heartbeat.log" 2>&1
+
+# Mac primary: execute any assigned local or remote jobs every minute
+* * * * * cd "$AI_OPERATOR_ROOT" && python3 control_plane/scripts/08_run_assigned_jobs.py >> "$AI_OPERATOR_ROOT/logs/executor.log" 2>&1
+
+# Mac primary: nightly consolidation
+0 2 * * * cd "$AI_OPERATOR_ROOT" && python3 control_plane/scripts/03_nightly_consolidation.py >> "$AI_OPERATOR_ROOT/logs/nightly.log" 2>&1
